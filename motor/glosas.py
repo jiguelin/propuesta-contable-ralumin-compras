@@ -24,14 +24,14 @@ def concepto(cuenta: str) -> str:
 def glosa_ralumin(cuenta: str, credito: bool, retencion: bool = False, comision: bool = False, detraccion: bool = False,
                   respaldo: str = '', tipo_doc: str = '01') -> tuple[str, bool]:
     """Devuelve (glosa, hubo_que_reconstruir_texto)."""
-    base = concepto(cuenta)
     c = (cuenta or '')
+    base = cfg.GLOSA_COMBUSTIBLE if cfg.es_combustible(c) else concepto(cuenta)
     if not base:
         base = (respaldo or 'COMPRA').upper()
         return normalizar(base, True, 60)
     if c.startswith('609192'):
         g = f'{base}{" CREDITO" if credito else ""} - COSTO'
-    elif c.startswith(cfg.GLOSAS_SIN_FORMA_PAGO):
+    elif c.startswith(cfg.GLOSAS_SIN_FORMA_PAGO) or cfg.es_combustible(c):
         g = base
     else:
         g = f'{base} - {"CREDITO" if credito else "EFECTIVO"}'

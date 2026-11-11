@@ -29,6 +29,8 @@ from .diario import MemoriaDiario, clave_comprobante, normalizar_serie_numero
 from .glosas import glosa_ralumin
 from .grupos import asignar_grupo, cuenta_pago_defecto, es_credito, es_cuenta_me
 from .retenciones import importe_retencion, motivo_exclusion
+from .excel_entrada import TIPOS_IMPORTACION, comprobante_desde_fila, es_de_excel, leer_excel_compras, pid_fila
+from .tipo_cambio import TC, HistorialTC
 from .xml_parser import parse_xml_bytes, texto_items
 
 ESTADOS = ('pendiente', 'exportado', 'contabilizado', 'excluido')
@@ -135,6 +137,10 @@ class Fila:
         return round(self.total * (self.tc if self.c.moneda_codigo == 'USD' and self.tc else 1.0), 2)
 
     @property
+    def origen(self) -> str:
+        return 'Excel' if es_de_excel(self.c) else 'XML'
+
+    @property
     def tiene_ajuste(self) -> bool:
         return bool(self.d.retencion) or bool(self.d.comision)
 
@@ -156,6 +162,11 @@ class Sesion:
     def __init__(self, periodo: str = ''):
         self.periodo = periodo                     # 'YYYY-MM'
         self.xml: dict[str, tuple[str, bytes]] = {}     # id → (nombre de archivo, bytes)
+        self.excel: dict[str, tuple[str, dict]] = {}    # id → (nombre del Excel, fila) — cuando no hay XML
+        self.excel_cubiertos = 0                        # filas del Excel que ya llegaron también como XML (manda el XML)
+        self._fechas_tc_excel: set = set()
+        self._glosa_historial: dict = {}
+        self._plan = None
         self.decisiones: dict[str, Decision] = {}
         self.bloques: list[Bloque] = []
         self.calle23: set[str] = set()
@@ -182,6 +193,22 @@ class Sesion:
             nuevos += 1
         return nuevos, repetidos
 
+    def agregar_excel(self, nombre: str, data: bytes) -> tuple[int, int, list[str]]:
+        """Agrega las filas de un Excel de comprobantes (formato de la plantilla de Contasis, sin cuentas).
+        Devuelve (nuevas, repetidas, avisos)."""
+        filas, avisos = leer_excel_compras(data)
+        if not filas:
+            raise ValueError('No encontré comprobantes en el Excel: debe tener la fecha en la columna A y el tipo en la C.')
+        nuevas = repetidas = 0
+        for f in filas:
+            pid = pid_fila(f)
+            if pid in self.excel or pid in self.xml:
+                repetidas += 1
+                continue
+            self.excel[pid] = (nombre, f)
+            nuevas += 1
+        return nuevas, repetidas, avisos
+
     def meses(self) -> dict[str, int]:
         from collections import Counter
         cnt = Counter()
@@ -189,7 +216,44 @@ class Sesion:
             c = parse_xml_bytes(data, nombre)
             if c.fecha_emision:
                 cnt[c.fecha_emision[:7]] += 1
+        for _, f in self.excel.values():
+            cnt[f['emision'][:7]] += 1
         return dict(sorted(cnt.items()))
+
+    def _comprobantes(self, m: Maestros) -> list:
+        """XML + filas del Excel. Si un comprobante llegó por las dos vías, manda el XML (trae ítems, forma de pago, detracción)."""
+        comps = [parse_xml_bytes(b, n) for n, b in self.xml.values()]
+        claves_xml = {clave_comprobante(c.ruc_emisor, c.tipo_codigo, c.serie_numero) for c in comps}
+        self.excel_cubiertos = 0
+        mem = m.memoria
+        for nombre, f in self.excel.values():
+            c = comprobante_desde_fila(f, nombre)
+            if clave_comprobante(c.ruc_emisor, c.tipo_codigo, c.serie_numero) in claves_xml:
+                self.excel_cubiertos += 1
+                continue
+            # el Excel no trae la forma de pago: si al proveedor se le registraba con 4212, se propone crédito
+            c.credito_por_historial = False
+            if not c.forma_pago and mem and mem.pago_reciente(c.ruc_emisor) == cfg.CUENTA_CREDITO:
+                c.forma_pago, c.credito_por_historial = 'Credito', True
+            comps.append(c)
+        return comps
+
+    def _tc_con_excel(self, m: Maestros) -> HistorialTC | None:
+        """Tipo de cambio SUNAT cargado + (de respaldo) el TC que trae el Excel en sus filas en dólares."""
+        extra = {}
+        for _, f in self.excel.values():
+            if f.get('usd') and f.get('tc', 0) > 1:
+                extra.setdefault(f['emision'], f['tc'])
+        if not extra:
+            return m.tc
+        base = dict(m.tc._d) if m.tc else {}
+        self._fechas_tc_excel = set()
+        for fe, v in extra.items():
+            d = datetime.strptime(fe, '%Y-%m-%d').date()
+            if d not in base:
+                base[d] = TC(d, v, v)
+                self._fechas_tc_excel.add(fe)
+        return HistorialTC(list(base.values()))
 
     # ------------------------------------------------------------------ proceso
     def procesar(self, m: Maestros, umbral_ia: int = 90):
@@ -197,10 +261,23 @@ class Sesion:
         ctx = Contexto(plan=m.plan, tc=m.tc, memoria_proveedor=(mem.memoria_proveedor if mem else None),
                        historial_stats=dict(mem.frecuencia) if mem else {}, cuenta_haber='4212',
                        alerta_monto=20000, excluir_bancos=True, ia=m.ia, umbral_ia=umbral_ia, reglas=cfg.REGLAS)
-        ctx.periodo = self.periodo
-        comps = [parse_xml_bytes(b, n) for n, b in self.xml.values()]
+        self._fechas_tc_excel = set()
+        self._glosa_historial = m.memoria.glosa_proveedor() if m.memoria else {}
+        self._plan = m.plan
+        ctx.tc = self._tc_con_excel(m)
+        ctx.periodo = ''                     # el periodo lo maneja la sesión: anteriores quedan pendientes con aviso, posteriores se excluyen
+        comps = self._comprobantes(m)
         comps.sort(key=lambda c: (c.fecha_emision, c.serie_numero))
         props = procesar_lote(comps, ctx)
+        for p in props:
+            if es_de_excel(p.c):
+                f = p.c.excel
+                if p.c.moneda_codigo == 'USD' and f.get('tc', 0) > 1:      # el TC del Excel es el que cuadra con sus importes en soles
+                    p.tc, p.tc_exacto = f['tc'], True
+                    p.alertas = [a for a in p.alertas if 'TC del' not in a and 'tipo de cambio' not in a.lower()]
+                if f.get('det_constancia'):
+                    p.det_constancia = f['det_constancia']
+                    p.det_fecha = datetime.strptime(f['det_fecha'], '%Y-%m-%d').date() if f.get('det_fecha') else None
         if m.constancias:
             _, self.constancias_sin_factura = cruzar(props, m.constancias)
 
@@ -230,8 +307,12 @@ class Sesion:
             if mem and clave in mem.asientos_por_clave:
                 mes, n = mem.asientos_por_clave[clave]
                 d.asiento = f'{mes}-{n}'
+        elif c.tipo_codigo in TIPOS_IMPORTACION:
+            d.estado, d.motivo = 'excluido', f'Importación ({c.tipo_nombre.lower()}): va en el subdiario 19, fuera de esta versión'
         elif p.estado in ('excluido', 'error', 'duplicado'):
             d.estado, d.motivo = 'excluido', p.motivo
+        elif self.periodo and c.fecha_emision[:7] > self.periodo:
+            d.estado, d.motivo = 'excluido', f'Posterior al periodo {self.periodo} (emitido el {c.fecha_emision})'
         elif p.c.tiene_detraccion and not p.det_constancia:
             d.estado = 'excluido'
             d.motivo = (f'Detracción {c.detraccion_porcentaje}% sin constancia de depósito: sin depósito no hay crédito fiscal. '
@@ -263,8 +344,12 @@ class Sesion:
         d, c = f.d, f.c
         if d.glosa_manual:
             return
+        respaldo = f.p.glosa
+        if es_de_excel(c) or not c.lineas:
+            cu = self._plan.get(d.cuenta_gasto) if self._plan and d.cuenta_gasto else None
+            respaldo = self._glosa_historial.get(c.ruc_emisor) or (cu.descripcion.upper() if cu else '') or respaldo
         d.glosa, _ = glosa_ralumin(d.cuenta_gasto, d.condicion == 'CRE', retencion=d.retencion, comision=bool(d.comision),
-                                   detraccion=c.tiene_detraccion, respaldo=f.p.glosa, tipo_doc=c.tipo_codigo)
+                                   detraccion=c.tiene_detraccion, respaldo=respaldo, tipo_doc=c.tipo_codigo)
 
     def _cruzar_retenciones(self, m: Maestros):
         """Llena la retención con los XML de comprobantes de retención emitidos por Ralumin."""
@@ -378,7 +463,7 @@ class Sesion:
                     f.avisos.append('Compra al contado con 4212: al contado va directo a la cuenta 10 (1011, 1012 o la 104 del banco).')
                 if cp.startswith(cfg.RAICES_PAGO) and d.condicion == 'CRE':
                     amarillo = True
-                    f.avisos.append('El XML dice crédito pero la cuenta de pago es una 10: confirme que se pagó al registrarla.')
+                    f.avisos.append('El comprobante figura al crédito pero la cuenta de pago es una 10: confirme que se pagó al registrarla.')
                 if cp.startswith(cfg.RAICES_PAGO) and es_cuenta_me(cp, plan) != (c.moneda_codigo == 'USD'):
                     amarillo = True
                     f.avisos.append(f'La cuenta {cp} es de otra moneda que la factura ({c.moneda_codigo}).')
@@ -386,13 +471,32 @@ class Sesion:
             if not f.p.tc:
                 rojo = True
                 f.avisos.append(f'Sin tipo de cambio SUNAT para {c.fecha_emision}: cargue el PDF del mes.')
+            # ---- periodo anterior ----
+            if self.periodo and c.fecha_emision[:7] < self.periodo:
+                amarillo = True
+                f.avisos.append(f'Emitido en {c.fecha_emision[:7]} (periodo anterior): se registra en {self.periodo}. '
+                                'Confirme que no esté ya registrado (con el Diario al día, el app lo detecta solo).')
+            # ---- comprobante que vino del Excel (sin XML) ----
+            if es_de_excel(c):
+                mem = m.memoria
+                if getattr(c, 'credito_por_historial', False) and not d.condicion_manual:
+                    f.avisos.append('Crédito según el historial del proveedor (el Excel no trae la forma de pago): confírmelo con el documento.')
+                if mem and mem.detracciones.get(c.ruc_emisor) and not c.tiene_detraccion and c.tipo_codigo == '01':
+                    amarillo = True
+                    f.avisos.append('Este proveedor tuvo detracción en el Diario y el Excel no trae la constancia: revise el documento.')
+                if c.tipo_codigo in ('07', '08') and not c.doc_referencia:
+                    amarillo = True
+                    f.avisos.append('Nota sin documento de referencia en el Excel: complete el comprobante que modifica.')
+                if f.p.fuente not in ('memoria', 'regla') and not d.gasto_manual and not d.revisado and f.p.confianza >= 75:
+                    amarillo = True
+                    f.avisos.append('Sin XML ni historial del proveedor: la cuenta se propuso por el nombre; revísela con el documento.')
             # ---- proveedor nuevo ----
             f.proveedor_nuevo = bool(m.entidades) and c.ruc_emisor not in m.entidades
             if f.proveedor_nuevo:
                 amarillo = True
                 f.avisos.append('Proveedor nuevo: no está en Entidades de Contasis; créelo antes de importar.')
-            # ---- confianza de la cuenta propuesta ----
-            if not d.gasto_manual:
+            # ---- confianza de la cuenta propuesta (marcar "Revisado" = la persona la confirmó con el documento) ----
+            if not d.gasto_manual and not d.revisado:
                 if f.p.confianza < 75:
                     rojo = True
                     f.avisos.append(f'Cuenta de gasto con baja confianza ({f.p.confianza} %): revisar.')
@@ -401,7 +505,8 @@ class Sesion:
             if d.reparto:
                 f.avisos.append(f'Reparto {cfg.PORCENTAJE_ADM:.0f}/{100 - cfg.PORCENTAJE_ADM:.0f}: va 100 % a {d.cuenta_gasto} y se ajusta con la hoja REPARTO 60-40.')
             # alertas del motor (detracción, IGV 10.5 %, activo fijo…)
-            f.avisos.extend(a for a in f.p.alertas if 'tipo de cambio' not in a.lower())
+            f.avisos.extend(a for a in f.p.alertas if 'tipo de cambio' not in a.lower()
+                            and not (es_de_excel(c) and 'detalle de ítems' in a))
             self._glosa(f)
             f.nivel = 'rojo' if rojo else ('amarillo' if amarillo else 'ok')
 
@@ -549,7 +654,8 @@ class Sesion:
         return {
             'version': 1, 'periodo': self.periodo, 'actualizado': self.actualizado,
             'xml': {pid: [n, _b64(b)] for pid, (n, b) in self.xml.items()},
-            'decisiones': {pid: asdict(d) for pid, d in self.decisiones.items() if pid in self.xml},
+            'excel': {pid: [n, f] for pid, (n, f) in self.excel.items()},
+            'decisiones': {pid: asdict(d) for pid, d in self.decisiones.items() if pid in self.xml or pid in self.excel or pid in self.filas},
             'bloques': [asdict(b) for b in self.bloques],
             'calle23': sorted(self.calle23),
         }
@@ -559,6 +665,7 @@ class Sesion:
         s = cls(data.get('periodo', ''))
         s.actualizado = data.get('actualizado', '')
         s.xml = {pid: (n, _unb64(b)) for pid, (n, b) in (data.get('xml') or {}).items()}
+        s.excel = {pid: (n, f) for pid, (n, f) in (data.get('excel') or {}).items()}
         s.decisiones = {pid: Decision.desde_dict(d) for pid, d in (data.get('decisiones') or {}).items()}
         s.bloques = [Bloque(**b) for b in data.get('bloques') or []]
         s.calle23 = set(data.get('calle23') or [])
@@ -569,12 +676,13 @@ def _ajuste_gasto(p: Propuesta, mem: MemoriaDiario | None, plan) -> str:
     """Correcciones propias de Ralumin sobre la cuenta que propone el motor general."""
     cuenta = p.cuenta
     if p.fuente in ('regla', 'memoria', 'manual'):
-        return cuenta
+        return cfg.CUENTAS_UNIFICADAS.get(cuenta, cuenta)
     texto = f'{p.c.nombre_emisor} {texto_items(p.c)}'.upper()
     sin_memoria = not (mem and mem.gasto.get(p.c.ruc_emisor))
     # combustible solo si de verdad es combustible
-    if cuenta.startswith('656009') and not any(k in texto for k in cfg.KW_COMBUSTIBLE):
+    if cfg.es_combustible(cuenta) and not any(k in texto for k in cfg.KW_COMBUSTIBLE) and p.fuente not in ('memoria',):
         cuenta = cfg.CUENTA_SUMINISTROS
+    cuenta = cfg.CUENTAS_UNIFICADAS.get(cuenta, cuenta)
     # bienes sin ninguna pista → material auxiliar (lo más usado por Ralumin); queda en rojo para revisar
     if sin_memoria and 'sin palabra clave' in (p.explicacion or '') and (not plan or plan.existe(cfg.CUENTA_BIENES_DEFECTO)):
         cuenta = cfg.CUENTA_BIENES_DEFECTO
