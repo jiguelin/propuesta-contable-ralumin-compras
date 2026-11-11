@@ -179,12 +179,12 @@ with st.sidebar:
         st.session_state['periodo'] = periodo
         st.session_state['sesion'] = abrir_sesion(periodo)
         st.session_state['sel'] = set()
-        if st.session_state['sesion'].xml:
+        if st.session_state['sesion'].xml or st.session_state['sesion'].excel:
             reprocesar()
 
 S: Sesion = st.session_state['sesion']
 M, INFO = cargar_maestros()
-if S.xml and not S.filas:
+if (S.xml or S.excel) and not S.filas:
     S.procesar(M)
 
 # ----------------------------------------------------------------------------- barra lateral: maestros
@@ -193,8 +193,11 @@ with st.sidebar:
     st.markdown(f"<span class='pequeno'>Plan: {INFO.get('plan', '⚠️ falta')}<br>Entidades: {INFO.get('entidades', '⚠️ falta')}<br>"
                 f"Diario: {INFO.get('diario', '⚠️ falta')}<br>Tipo de cambio: {', '.join(M.tc.meses_cargados()) or '⚠️ falta'}<br>"
                 f"Padrones SUNAT: {len(M.padron):,} RUC</span>", unsafe_allow_html=True)
-    if M.tc and periodo not in M.tc.meses_cargados():
-        st.error(f'Falta el PDF de tipo de cambio SUNAT de {periodo}: sin él no se puede descargar.')
+    if M.tc is not None and periodo not in M.tc.meses_cargados():
+        if S._fechas_tc_excel:
+            st.warning(f'Falta el PDF de tipo de cambio SUNAT de {periodo}: por ahora se usa el TC que trae el Excel.')
+        else:
+            st.error(f'Falta el PDF de tipo de cambio SUNAT de {periodo}: sin él no se puede crear bloques.')
 
     with st.expander('Actualizar maestros'):
         st.caption('Sube la versión nueva exportada de Contasis. El app la usa desde ese momento.')
@@ -219,7 +222,7 @@ with st.sidebar:
                         sha = subir_a_github(TOKEN, REPO, f'datos/{archivo}', data, f'Actualiza {archivo} desde el app ({datetime.now():%Y-%m-%d %H:%M})')
                         msg += f' También se actualizó en GitHub (commit {sha[:7]}).' + ('' if privado else ' Ojo: el repositorio es público.')
                     st.success(msg)
-                    if clave == 'diario' and S.xml:
+                    if clave == 'diario' and (S.xml or S.excel):
                         m2, _ = cargar_maestros()
                         r = S.confirmar_con_diario(m2.memoria)
                         st.info(f'Con este Diario: {r["confirmados"]} comprobante(s) de bloques confirmados, '
@@ -284,26 +287,74 @@ c1.metric('Comprobantes del mes', av['total'])
 c2.metric('Pendientes', av['pendiente'])
 c3.metric('En bloques exportados', av['exportado'])
 c4.metric('Contabilizados', av['contabilizado'])
-c5.metric('Pendiente S/ · US$', f"{av['montos']['pendiente']['PEN']:,.0f} · {av['montos']['pendiente']['USD']:,.0f}")
+def _corto(v: float) -> str:
+    return f'{v / 1e6:,.1f} M' if v >= 1e6 else (f'{v / 1e3:,.1f} mil' if v >= 1e4 else f'{v:,.0f}')
+
+
+c5.metric('Pendiente S/ · US$', f"{_corto(av['montos']['pendiente']['PEN'])} · {_corto(av['montos']['pendiente']['USD'])}",
+          help=f"S/ {av['montos']['pendiente']['PEN']:,.2f} · US$ {av['montos']['pendiente']['USD']:,.2f}")
 if av['total']:
     st.progress(av['contabilizado'] / av['total'], text=f"{av['contabilizado'] / av['total']:.0%} contabilizado")
 
 tab_carga, tab_prop, tab_bloq, tab_otros = st.tabs(['1 · Cargar', '2 · Propuesta', '3 · Bloques', 'Excluidos y contabilizados'])
 
 # ----------------------------------------------------------------------------- 1. carga
+def aviso_meses():
+    meses = S.meses()
+    antes = {k: v for k, v in meses.items() if k < periodo}
+    despues = {k: v for k, v in meses.items() if k > periodo}
+    if antes:
+        st.info(f'Comprobantes de meses anteriores ({", ".join(f"{k}: {v}" for k, v in antes.items())}): los que no estén en el Diario '
+                'quedan pendientes con aviso, para registrarlos en este mes.')
+    if despues:
+        st.warning(f'Comprobantes posteriores a {periodo} ({", ".join(f"{k}: {v}" for k, v in despues.items())}): quedan en Excluidos.')
+
+
 with tab_carga:
-    st.markdown('Sube los XML de compras del mes (sueltos o en ZIP). Se pueden subir en varias tandas: los repetidos se ignoran.')
-    ups = st.file_uploader('XML o ZIP de compras', type=['xml', 'zip'], accept_multiple_files=True, key=f'up_xml_{st.session_state.get("up_v", 0)}')
-    if ups and st.button('Agregar y procesar', type='primary'):
-        xmls = extraer_xml([(u.name, u.getvalue()) for u in ups])
-        nuevos, rep = S.agregar_xml(xmls)
-        reprocesar()
-        st.session_state['up_v'] = st.session_state.get('up_v', 0) + 1
-        st.success(f'{nuevos} comprobante(s) nuevos, {rep} repetidos.')
-        meses = S.meses()
-        otros = {k: v for k, v in meses.items() if k != periodo}
-        if otros:
-            st.warning(f'Hay comprobantes de otros meses ({", ".join(f"{k}: {v}" for k, v in otros.items())}); quedan en Excluidos.')
+    st.markdown('Se puede trabajar con **XML**, con el **Excel de comprobantes** o con los dos a la vez. Si un comprobante llega por las '
+                'dos vías, se usa el XML (trae ítems, forma de pago y detracción). Se puede subir en varias tandas: los repetidos se ignoran.')
+    cx, ce = st.columns(2)
+    with cx:
+        st.markdown('**XML** (sueltos o en ZIP)')
+        ups = st.file_uploader('XML o ZIP de compras', type=['xml', 'zip'], accept_multiple_files=True, key=f'up_xml_{st.session_state.get("up_v", 0)}')
+        if ups and st.button('Agregar XML y procesar', type='primary'):
+            xmls = extraer_xml([(u.name, u.getvalue()) for u in ups])
+            nuevos, rep = S.agregar_xml(xmls)
+            reprocesar()
+            st.session_state['up_v'] = st.session_state.get('up_v', 0) + 1
+            st.session_state['msg_carga'] = [f'{nuevos} comprobante(s) XML nuevos, {rep} repetidos.']
+            st.rerun()
+    with ce:
+        st.markdown('**Excel de comprobantes** (cuando no hay XML)')
+        st.caption('Mismo orden de columnas que la plantilla de Contasis, con las cuentas vacías. Importes en soles; si la columna AC '
+                   'tiene un monto, el comprobante es en dólares y W trae su tipo de cambio. Sin ítems ni forma de pago: la cuenta '
+                   'y el contado/crédito salen del historial del proveedor.')
+        upx = st.file_uploader('Excel de comprobantes', type=['xlsx', 'xlsm'], accept_multiple_files=True, key=f'up_exc_{st.session_state.get("up_v", 0)}')
+        if upx and st.button('Agregar Excel y procesar', type='primary'):
+            tot_n = tot_r = 0
+            for u in upx:
+                try:
+                    n, r, avs = S.agregar_excel(u.name, u.getvalue())
+                    tot_n, tot_r = tot_n + n, tot_r + r
+                    for a in avs[:5]:
+                        st.caption(f'{u.name}: {a}')
+                except ValueError as ex:
+                    st.error(f'{u.name}: {ex}')
+            reprocesar()
+            st.session_state['up_v'] = st.session_state.get('up_v', 0) + 1
+            st.session_state['msg_carga'] = [f'{tot_n} comprobante(s) nuevos del Excel, {tot_r} repetidos.'] + \
+                ([f'{S.excel_cubiertos} fila(s) del Excel ya estaban como XML: se usa el XML.'] if S.excel_cubiertos else [])
+            st.rerun()
+    for msg in st.session_state.pop('msg_carga', []):
+        st.success(msg)
+    if S.filas:
+        aviso_meses()
+    if S.xml or S.excel:
+        st.caption(f'En este mes: {len(S.xml)} XML · {len(S.excel)} filas de Excel'
+                   + (f' ({S.excel_cubiertos} cubiertas por XML)' if S.excel_cubiertos else ''))
+    if S._fechas_tc_excel:
+        st.info(f'Falta el PDF de tipo de cambio SUNAT para {len(S._fechas_tc_excel)} fecha(s): se usó el TC que trae el Excel en sus '
+                'comprobantes en dólares. Cuando subas el PDF, se usará el de SUNAT.')
     col1, col2 = st.columns(2)
     with col1:
         cre = st.file_uploader('Comprobantes de retención emitidos por Ralumin (XML o ZIP)', type=['xml', 'zip'], accept_multiple_files=True, key='up_cre')
@@ -328,7 +379,7 @@ with tab_carga:
     if S.retenciones_sin_factura:
         st.warning(f'{len(S.retenciones_sin_factura)} referencia(s) de comprobantes de retención sin factura en el lote: '
                    + ', '.join(f'{a} → {c}' for a, _, c, _ in S.retenciones_sin_factura[:8]))
-    if S.xml and st.button('Volver a procesar todo'):
+    if (S.xml or S.excel) and st.button('Volver a procesar todo'):
         reprocesar()
         st.rerun()
 
@@ -350,7 +401,7 @@ def tabla(filas) -> pd.DataFrame:
         d, c = f.d, f.c
         reg.append({
             'id': f.id, 'Sel': f.id in sel, '': f.semaforo, 'Grupo': cfg.GRUPO_NOMBRE.get(d.grupo, d.grupo), 'Fecha': c.fecha_emision,
-            'Comprobante': c.serie_numero, 'RUC': c.ruc_emisor, 'Proveedor': c.nombre_emisor[:40], 'Mon': 'US$' if c.moneda_codigo == 'USD' else 'S/',
+            'Comprobante': c.serie_numero, 'Origen': f.origen, 'RUC': c.ruc_emisor, 'Proveedor': c.nombre_emisor[:40], 'Mon': 'US$' if c.moneda_codigo == 'USD' else 'S/',
             'Total': round(f.total, 2), 'Cuenta gasto': d.cuenta_gasto, '60/40': d.reparto, 'Cuenta pago': d.cuenta_pago, 'Cond': d.condicion,
             'Retención': d.retencion, 'Ret. S/': round(d.retencion_monto or 0, 2), 'Comp. retención': f'{d.retencion_serie}-{d.retencion_numero}' if d.retencion_serie else '',
             'Comisión': round(d.comision or 0, 2), 'Pago agrupado': d.pago_agrupado, 'Revisado': d.revisado, 'Glosa': d.glosa,
@@ -394,18 +445,20 @@ def aplicar_edicion(original: pd.DataFrame, editado: pd.DataFrame) -> int:
 
 with tab_prop:
     if not S.filas:
-        st.info('Primero sube los XML en la pestaña 1 · Cargar, y verifica en la barra lateral que estén el plan, el Diario y el tipo de cambio.')
+        st.info('Primero sube los XML o el Excel de comprobantes en la pestaña 1 · Cargar, y verifica en la barra lateral que estén el plan, el Diario y el tipo de cambio.')
     else:
         pend = S.lista('pendiente')
         conteo = {g.id: sum(1 for f in pend if f.d.grupo == g.id) for g in cfg.GRUPOS}
         op_grupo = ['Todos'] + [g.id for g in cfg.GRUPOS if conteo[g.id]]
         etiqueta = {'Todos': f'Todos ({len(pend)})', **{g.id: f'{g.nombre} ({conteo[g.id]})' for g in cfg.GRUPOS}}
         grupo_sel = st.radio('Grupo', op_grupo, horizontal=True, format_func=lambda x: etiqueta[x], key='grupo_sel')
-        fc1, fc2, fc3, fc4 = st.columns([3, 1.2, 1.2, 1.2])
+        fc1, fc2, fc3, fc4, fc5 = st.columns([2.6, 1, 1.1, 1.6, 1])
         buscar = fc1.text_input('🔎 Buscar en todos los grupos (RUC, proveedor, serie-número, importe, ítem o cuenta)', key='buscar')
         mon = fc2.selectbox('Moneda', ['Todas', 'S/', 'US$'])
         nivel = fc3.selectbox('Semáforo', ['Todos', '🔴 rojo', '🟡 amarillo', '🟢 verde'])
-        solo_nr = fc4.checkbox('Solo no revisados')
+        ajuste = fc4.selectbox('Retención / comisión', ['Todos', 'Con retención', 'Cumple la regla de retención', 'Retención sin comprobante',
+                                                        'Sin retención', 'Con comisión', 'Con retención o comisión'], key='filtro_ajuste')
+        solo_nr = fc5.checkbox('Solo no revisados')
 
         def pasa(f) -> bool:
             if buscar.strip():
@@ -422,6 +475,15 @@ with tab_prop:
                 return False
             if solo_nr and f.d.revisado:
                 return False
+            if ajuste != 'Todos':
+                ok = {'Con retención': f.d.retencion,
+                      'Cumple la regla de retención': f.retencion_sugerida,
+                      'Retención sin comprobante': f.d.retencion and not f.d.retencion_serie,
+                      'Sin retención': not f.d.retencion,
+                      'Con comisión': bool(f.d.comision),
+                      'Con retención o comisión': f.tiene_ajuste}[ajuste]
+                if not ok:
+                    return False
             return True
 
         vista = [f for f in pend if pasa(f)]
@@ -447,9 +509,9 @@ with tab_prop:
         else:
             editado = st.data_editor(
                 df, key=f'editor_{st.session_state.get("editor_v", 0)}', hide_index=True, width='stretch', height=min(640, 38 + 35 * len(df)),
-                column_order=['Sel', '', 'Grupo', 'Fecha', 'Comprobante', 'RUC', 'Proveedor', 'Mon', 'Total', 'Cuenta gasto', '60/40', 'Cuenta pago',
+                column_order=['Sel', '', 'Grupo', 'Fecha', 'Comprobante', 'Origen', 'RUC', 'Proveedor', 'Mon', 'Total', 'Cuenta gasto', '60/40', 'Cuenta pago',
                               'Cond', 'Retención', 'Ret. S/', 'Comp. retención', 'Comisión', 'Pago agrupado', 'Revisado', 'Glosa', 'Avisos'],
-                disabled=['', 'Fecha', 'Comprobante', 'RUC', 'Proveedor', 'Mon', 'Total', 'Avisos'],
+                disabled=['', 'Fecha', 'Comprobante', 'Origen', 'RUC', 'Proveedor', 'Mon', 'Total', 'Avisos'],
                 column_config={
                     'Sel': st.column_config.CheckboxColumn('Sel', width='small'),
                     'Grupo': st.column_config.SelectboxColumn('Grupo', options=[g.nombre for g in cfg.GRUPOS], width='medium'),
@@ -551,8 +613,11 @@ with tab_prop:
                     st.markdown(f'**{c.nombre_emisor}** · RUC {c.ruc_emisor}  \n{c.tipo_nombre} {c.serie_numero} del {c.fecha_emision}  \n'
                                 f'Forma de pago: {c.forma_pago or "-"}{" · " + str(len(c.cuotas)) + " cuota(s)" if c.cuotas else ""} · '
                                 f'Moneda {c.moneda_codigo} · TC {f.p.tc or "-"}')
-                    st.dataframe(pd.DataFrame([{'Ítem': l.descripcion, 'Cant.': float(l.cantidad), 'Valor': float(l.valor_venta)} for l in c.lineas]),
-                                 hide_index=True, width='stretch')
+                    if c.lineas:
+                        st.dataframe(pd.DataFrame([{'Ítem': l.descripcion, 'Cant.': float(l.cantidad), 'Valor': float(l.valor_venta)} for l in c.lineas]),
+                                     hide_index=True, width='stretch')
+                    else:
+                        st.caption(f'Sin detalle de ítems: vino del {c.archivo}. Revise el documento físico.')
                     if c.leyendas or c.observaciones:
                         st.caption('Leyendas: ' + ' | '.join(c.leyendas + c.observaciones))
                 with d2:

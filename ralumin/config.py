@@ -106,13 +106,21 @@ REGLAS = list(REGLAS_SISTEMA) + REGLAS_RALUMIN
 CUENTA_BIENES_DEFECTO = '6031025'
 # Suministros genéricos (no combustible)
 CUENTA_SUMINISTROS = '6560094'
+# Cuentas que Ralumin ya no usa por separado: se proponen siempre como la de la derecha
+# (peajes: una sola cuenta 6315095, decisión de Jiguel del 26/10/2026).
+CUENTAS_UNIFICADAS = {'6315094': '6315095'}
+
+
+def es_combustible(cuenta: str) -> bool:
+    """656009401 / 656009501 (gasolina). Ojo: 6560094 y 6560095 (suministros) también empiezan con 656009."""
+    c = (cuenta or '').strip()
+    return len(c) >= 9 and c.startswith('656009')
 KW_COMBUSTIBLE = ('GASOHOL', 'GASOLINA', 'DIESEL', 'PETROLEO', 'PETRÓLEO', 'GLP', 'GNV', 'COMBUSTIBLE', 'DB5', 'BIODIESEL')
 
 # ----------------------------------------------------------------------------- glosas con el estilo de Ralumin
 # raíz de la cuenta de gasto → concepto (sin la forma de pago). La más larga que coincida gana.
 GLOSAS = {
     '6315': 'GASTOS DE VIAJE - PEAJE - ESTACIONAMIENTO, ETC.',
-    '656009': 'SUMINISTROS - GASOLINA',
     '6560': 'COMPRA SUMINISTRO',
     '6031': 'COMPRA MATERIALES Y SUMINISTROS',
     '6011': 'COMPRA MERCADERIAS',
@@ -135,4 +143,5 @@ GLOSAS = {
     '6343': 'SERV MANT REPARACION INM MAQ Y EQUIPO',
 }
 # Conceptos que en el Diario de Ralumin no llevan forma de pago en la glosa.
-GLOSAS_SIN_FORMA_PAGO = ('6315', '656009', '6412')
+GLOSAS_SIN_FORMA_PAGO = ('6315', '6412')
+GLOSA_COMBUSTIBLE = 'SUMINISTROS - GASOLINA'

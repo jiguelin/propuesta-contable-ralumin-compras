@@ -20,6 +20,7 @@ from openpyxl.utils import get_column_letter
 from ralumin import config as cfg
 
 from . import pcge
+from .excel_entrada import es_de_excel
 from .excel_newcontasis import CABECERAS, _escribir_filas, fila_newcontasis
 from .sesion import Bloque, Fila, Sesion
 
@@ -42,6 +43,15 @@ def fila_contasis(f: Fila, plan=None) -> list:
     if fila[COL_AK] == 3:                     # retención declarada en el XML: va por el reporte de ajustes
         for j in range(COL_AK, COL_AP + 1):
             fila[j] = ''
+    if es_de_excel(p.c):                      # vino del Excel: se exportan sus importes en soles, su TC y su US$ tal cual
+        x = p.c.excel
+        for j, col in enumerate('JKLMNOPQRS', start=9):
+            fila[j] = round(float(x[col]), 2)
+        if p.c.moneda_codigo == 'USD':
+            fila[22] = p.tc or x['tc']
+            fila[28] = round(float(x['AC']), 2)
+        if x.get('anio_dua'):
+            fila[4] = x['anio_dua']
     return fila
 
 

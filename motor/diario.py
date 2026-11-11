@@ -243,6 +243,8 @@ class MemoriaDiario:
     reparto: dict = field(default_factory=lambda: defaultdict(Counter))    # ruc → Counter(True/False)
     ultimas: dict = field(default_factory=lambda: defaultdict(list))       # ruc → [(fecha, doc, cuenta gasto, cuenta pago, total)]
     frecuencia: Counter = field(default_factory=Counter)                   # cuenta → veces
+    detracciones: Counter = field(default_factory=Counter)                 # ruc → asientos con detracción (glosa "DETRA")
+    glosas: dict = field(default_factory=lambda: defaultdict(Counter))     # ruc → Counter(glosa)
     contabilizados: set = field(default_factory=set)                       # claves (ruc, tipo, serie, número)
     asientos_por_clave: dict = field(default_factory=dict)                 # clave → (mes, número de asiento)
     n_asientos: int = 0
@@ -264,6 +266,17 @@ class MemoriaDiario:
             return ''
         ultimo = max(por_mes)
         return por_mes[ultimo].most_common(1)[0][0]
+
+    def glosa_proveedor(self) -> dict[str, str]:
+        """Glosa más usada con cada proveedor (sin la forma de pago), para cuando no hay ítems."""
+        quitar = (' - EFECTIVO', ' - CREDITO', ' - RETENCION', ' - DETRA', ' + GASTO BANCARIO')
+        out = {}
+        for ruc, cnt in self.glosas.items():
+            g = cnt.most_common(1)[0][0]
+            for q in quitar:
+                g = g.split(q)[0]
+            out[ruc] = g.strip()
+        return out
 
     def suele_repartir(self, ruc: str) -> bool | None:
         c = self.reparto.get(ruc)
@@ -290,6 +303,10 @@ def construir_memoria(asientos: list[Asiento], meses_recientes: int = 3) -> Memo
         if not ruc or not cg or a.glosa.upper().startswith(('PAGO', 'CANCELACION')):
             continue
         # lo reciente pesa más: el último mes vale 1, el anterior 0.6, el otro 0.36… (Ralumin cambia de criterio con el tiempo)
+        if 'DETRA' in a.glosa.upper():
+            mem.detracciones[ruc] += 1
+        if a.glosa and a.glosa.upper() not in ('COMPRA', 'COMPRAS'):
+            mem.glosas[ruc][a.glosa.upper()] += 1
         peso = 0.6 ** (len(meses) - 1 - meses.index(a.mes)) if a.mes in meses else 0.1
         mem.gasto[ruc][cg] += peso
         mem.gasto_n[ruc][cg] += 1

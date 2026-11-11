@@ -26,7 +26,7 @@ from .tipo_cambio import HistorialTC
 from .xml_parser import (Comprobante, RUCS_BANCOS, OPERACIONES_FINANCIERAS, RUCS_COMBUSTIBLE, RUCS_RESTAURANTES, RUCS_SEGUROS,
                          RUCS_SERVICIOS_PUBLICOS, igv_reducido, texto_items)
 
-TIPOS_COMPRA = {'01', '03', '07', '08'}      # factura, boleta, NC, ND
+TIPOS_COMPRA = {'01', '03', '07', '08', '14'}      # factura, boleta, NC, ND, recibo de servicios públicos
 
 VERDE, AMARILLO, ROJO = 95, 75, 0
 
