@@ -69,12 +69,14 @@ if CLAVE and not st.session_state.get('acceso'):
 
 # ----------------------------------------------------------------------------- almacén y maestros
 @st.cache_resource
-def almacen() -> Almacen:
-    return Almacen(url=secreto('DATABASE_URL'))
+def almacen(url: str, version: str) -> Almacen:
+    # La versión y la URL son parte de la llave: cuando Streamlit actualiza el código sin reiniciar (cada PR unido)
+    # o cambia DATABASE_URL, se crea un almacén nuevo en vez de reutilizar el de la versión anterior.
+    return Almacen(url=url)
 
 
 try:
-    ALM = almacen()
+    ALM = almacen(secreto('DATABASE_URL'), __version__)
 except ErrorAlmacen as ex:
     st.error('No se pudo conectar con la base de datos (DATABASE_URL en los secrets de Streamlit). Revise que esté completa, '
              'entre comillas y sin espacios, tal como la copió de Neon. Detalle: ' + str(ex))
