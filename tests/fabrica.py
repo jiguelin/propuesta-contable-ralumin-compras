@@ -109,3 +109,30 @@ def diario_excel(asientos: list[dict]) -> bytes:
     buf = io.BytesIO()
     wb.save(buf)
     return buf.getvalue()
+
+
+def excel_retenciones_sunat(comprobantes: list[dict]) -> bytes:
+    """Reporte SUNAT "Consulta de Comprobantes Emitidos" de retenciones (mismo diseño que el .xls real, con su mojibake).
+    comprobantes: [{'serie': 'E001 - 10', 'fecha': '14/07/2026', 'ruc': ..., 'nombre': ..., 'estado': 'EMITIDO',
+                    'facturas': [(serie, número, fecha, 'S/ 800.00' | '$ 294.88', retención, neto)]}]"""
+    wb = Workbook()
+    ws = wb.active
+    ws.title = 'Sheet0'
+    ws.append(['Consulta de Comprobantes Emitidos/Recibidos'])
+    ws.append([])
+    ws.append(['', 'Periodo:', '01/07/2026 - 31/07/2026'])
+    for c in comprobantes:
+        ws.append([])
+        ws.append(['', 'Emisor:', f'RUC {RUC_EMPRESA} - RALUMIN E.I.R.L.   ', '', '', '', '', 'No. de Comprobante Retenciï¿½n', c['serie']])
+        ws.append(['', 'Receptor:', f'RUC {c["ruc"]} - {c["nombre"]}', '', '', '', '', 'Fecha de emisiï¿½n:', c['fecha']])
+        total = round(sum(f[4] for f in c['facturas']), 2)
+        ws.append(['', 'Importe Total Retenido:', f'S/ {total:.2f}', '', 'tasa %:', '03.00', '', 'Estado:', c.get('estado', 'EMITIDO')])
+        ws.append([])
+        ws.append(['Tipo de documento', 'Serie', 'Nï¿½mero', 'Fecha de emisiï¿½n', 'Total comprobante', 'Nro. de pago',
+                   'Importe pagado', 'Retenciï¿½n S/', 'Monto neto a pagar S/'])
+        for serie, num, fecha, tot, ret, neto in c['facturas']:
+            ws.append(['FACTURA', serie, num, fecha, tot, '1', tot, ret, f'{neto:.2f}'])
+        ws.append(['', '', '', '', '', '', '', total])
+    buf = io.BytesIO()
+    wb.save(buf)
+    return buf.getvalue()

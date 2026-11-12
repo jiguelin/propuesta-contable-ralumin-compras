@@ -433,7 +433,7 @@ def procesar_lote(comprobantes: list[Comprobante], ctx: Contexto) -> list[Propue
             p.alertas.append('Cuenta de activo fijo propuesta: registrar también en el módulo de activos.')
 
         # ---- alertas de negocio ----
-        total_pen = float(c.importe_total) * (p.tc or 1.0)
+        total_pen = float(c.importe_total) * ((p.tc or 1.0) if c.moneda_codigo != 'PEN' else 1.0)
         if total_pen >= ctx.alerta_monto:
             p.alertas.append(f'Importe mayor a S/ {ctx.alerta_monto:,.0f} (S/ {total_pen:,.2f}).')
         if c.tiene_detraccion:
