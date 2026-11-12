@@ -86,14 +86,28 @@ importe retenido, estado) y sus facturas, y las cruza con las compras cargadas d
 
 - `datos/plan_cuentas.xlsx` y `datos/entidades.xlsx`: maestros de Ralumin. Se actualizan desde el app.
 - El **Diario no se guarda en el repositorio**: se sube cada mes desde el app y queda en el almacén.
-- Almacén: **Postgres** si hay `DATABASE_URL` en los secrets (recomendado en Streamlit Cloud: el disco se borra al reiniciar);
-  si no, SQLite local (`datos/ralumin.db`). En la barra lateral se puede descargar y restaurar un respaldo JSON de la sesión.
+- Almacén: **Postgres** si hay `DATABASE_URL` en los secrets (necesario en Streamlit Cloud: su disco se borra al reiniciar
+  o actualizar); si no, SQLite local (`datos/ralumin.db`). Al pie de la página dice cuál se está usando.
+  En la barra lateral se puede descargar y restaurar un respaldo JSON de la sesión.
+- Con Postgres, el app guarda en memoria lo que ya leyó y reutiliza una sola conexión (se reconecta sola si la base se
+  apagó por falta de uso), así un clic no vuelve a bajar el Diario ni el plan desde internet.
+
+### Postgres gratis con Neon (recomendado)
+
+1. Crear una cuenta en [neon.com](https://neon.com) y un proyecto (región en Estados Unidos, por ejemplo **AWS US East**).
+2. En el proyecto: **Connect** → copiar la cadena de conexión (`postgresql://…neon.tech/neondb?sslmode=require…`).
+3. Streamlit Cloud → el app → **Settings → Secrets** → agregar `DATABASE_URL = "…"` (entre comillas) y guardar.
+4. El app se reinicia: al pie debe decir `Almacén: Postgres (….neon.tech)`. Restaurar el respaldo JSON y volver a subir
+   Diario, tipo de cambio y archivos del mes (una sola vez: desde ahí quedan guardados).
+
+La tabla `ralumin_kv` se crea sola. Neon apaga la base tras 5 minutos sin uso y la enciende sola al siguiente clic
+(el primero tarda un segundo más); no pausa el proyecto ni borra datos por inactividad, a diferencia de Supabase.
 
 ## Secrets (Streamlit Cloud → Settings → Secrets)
 
 ```toml
 APP_PASSWORD = "clave-para-entrar"
-DATABASE_URL = "postgresql://usuario:clave@host:5432/postgres"   # recomendado (Supabase/Neon gratis)
+DATABASE_URL = "postgresql://usuario:clave@host/neondb?sslmode=require"   # necesario en Streamlit Cloud (Neon gratis)
 GITHUB_TOKEN = "github_pat_..."     # opcional: para que "Actualizar maestros" guarde plan y entidades en datos/ del repositorio
 ANTHROPIC_API_KEY = "sk-ant-..."    # opcional: IA solo en casos dudosos
 ```
@@ -105,7 +119,7 @@ ANTHROPIC_API_KEY = "sk-ant-..."    # opcional: IA solo en casos dudosos
 ```bash
 pip install -r requirements.txt
 streamlit run app.py
-python -m pytest -q          # 22 pruebas con datos ficticios
+python -m pytest -q          # 24 pruebas con datos ficticios
 ```
 
 ## Estructura

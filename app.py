@@ -20,7 +20,7 @@ import pandas as pd
 import streamlit as st
 
 from motor import __version__
-from motor.almacen import Almacen
+from motor.almacen import Almacen, ErrorAlmacen
 from motor.detracciones import leer_constancias
 from motor.diario import construir_memoria, leer_diario
 from motor.exportar import excel_bloque, excel_mes, excel_revision_bloque
@@ -73,7 +73,12 @@ def almacen() -> Almacen:
     return Almacen(url=secreto('DATABASE_URL'))
 
 
-ALM = almacen()
+try:
+    ALM = almacen()
+except ErrorAlmacen as ex:
+    st.error('No se pudo conectar con la base de datos (DATABASE_URL en los secrets de Streamlit). Revise que esté completa, '
+             'entre comillas y sin espacios, tal como la copió de Neon. Detalle: ' + str(ex))
+    st.stop()
 REPO = secreto('GITHUB_REPO', 'jiguelin/propuesta-contable-ralumin-compras')
 TOKEN = secreto('GITHUB_TOKEN')
 
@@ -90,25 +95,35 @@ def cargar_maestros() -> tuple[Maestros, dict]:
     data, origen = leer_archivo(ALM, 'plan')
     if data:
         k = 'plan:' + _hash(data)
-        if k not in cache:
-            cache[k] = leer_plan_excel(data)
-        m.plan = cache[k]
-        info['plan'] = f'{len(m.plan.cuentas):,} cuentas · {origen}'
+        try:
+            if k not in cache:
+                cache[k] = leer_plan_excel(data)
+            m.plan = cache[k]
+            info['plan'] = f'{len(m.plan.cuentas):,} cuentas · {origen}'
+        except Exception:
+            info['plan'] = f'⚠️ el archivo guardado ({origen}) no se pudo leer: súbalo de nuevo'
     data, origen = leer_archivo(ALM, 'entidades')
     if data:
         k = 'ent:' + _hash(data)
-        if k not in cache:
-            cache[k] = leer_entidades(data)
-        m.entidades = cache[k]
-        info['entidades'] = f'{len(m.entidades):,} RUC · {origen}'
+        try:
+            if k not in cache:
+                cache[k] = leer_entidades(data)
+            m.entidades = cache[k]
+            info['entidades'] = f'{len(m.entidades):,} RUC · {origen}'
+        except Exception:
+            info['entidades'] = f'⚠️ el archivo guardado ({origen}) no se pudo leer: súbalo de nuevo'
     data, origen = leer_archivo(ALM, 'diario')
     if data:
         k = 'dia:' + _hash(data)
-        if k not in cache:
-            cache[k] = construir_memoria(leer_diario(data))
-        m.memoria = cache[k]
-        meses = m.memoria.meses
-        info['diario'] = f'{m.memoria.n_asientos:,} asientos ({meses[0]}–{meses[-1]}) · {origen}' if meses else origen
+        try:
+            if k not in cache:
+                cache[k] = construir_memoria(leer_diario(data))
+            m.memoria = cache[k]
+            meses = m.memoria.meses
+            info['diario'] = f'{m.memoria.n_asientos:,} asientos ({meses[0]}–{meses[-1]}) · {origen}' if meses else origen
+        except Exception:
+            m.memoria = None
+            info['diario'] = f'⚠️ el archivo guardado ({origen}) no se pudo leer: súbalo de nuevo'
     m.tc = HistorialTC([TC(date.fromisoformat(f), c, v) for f, c, v in ALM.leer('tc', defecto=[])])
     m.padron = set(ALM.leer('padron', defecto=[]))
     per = st.session_state.get('periodo', '')
@@ -731,4 +746,4 @@ with tab_otros:
                                     'Bloque': f'B{f.d.bloque:02d}' if f.d.bloque else '', 'Asiento': f.d.asiento, 'Cómo': f.d.motivo} for f in con]),
                      hide_index=True, width='stretch')
 
-st.caption(f'Almacén: {"Postgres" if ALM.persistente else "SQLite local"} · Sesión guardada {S.actualizado.replace("T", " ") or "-"}')
+st.caption(f'Almacén: {ALM.descripcion} · Sesión guardada {S.actualizado.replace("T", " ") or "-"}')

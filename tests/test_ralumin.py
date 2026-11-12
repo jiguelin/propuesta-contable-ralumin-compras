@@ -230,3 +230,19 @@ def test_entidades():
     buf = io.BytesIO()
     wb.save(buf)
     assert leer_entidades(buf.getvalue()) == {'20999999901': 'MATERIALES SAC'}
+
+
+def test_almacen_cache_y_reconexion(tmp_path):
+    ruta = str(tmp_path / 'k.db')
+    a = Almacen(ruta_sqlite=ruta)
+    a.guardar('maestro:diario', 'QUJD')
+    a.guardar('sesion:2026-10', {'n': 1})
+    b = Almacen(ruta_sqlite=ruta)                       # otro arranque del app: lee de la base
+    assert b.leer('maestro:diario', json_=False) == 'QUJD' and b.leer('sesion:2026-10') == {'n': 1} and b.fecha('maestro:diario')
+    assert b.leer('no-existe', defecto=[]) == []
+    b._conexion.close()                                 # conexión caída: la próxima escritura reconecta (en Postgres)
+    b._conexion = None
+    b.guardar('sesion:2026-10', {'n': 2})
+    assert b.leer('sesion:2026-10') == {'n': 2} and Almacen(ruta_sqlite=ruta).leer('sesion:2026-10') == {'n': 2}
+    b.borrar('sesion:2026-10')
+    assert b.leer('sesion:2026-10') is None and b.claves('maestro') == ['maestro:diario']
