@@ -7,6 +7,7 @@ Excel del bloque: plantilla NewContaSis de 50 columnas (A–AX), solo filas de d
   · AH (cuenta total) = la cuenta de pago de CADA fila (1011, 104103, 104102, 4212…).
   · AF = cuenta de gasto elegida; AE = condición CON/CRE de la fila; AS = glosa con el estilo de Ralumin.
   · AK–AP no llevan la retención (se completa con el reporte AJUSTES DE PAGO); detracción y percepción, igual que hoy.
+  · En dólares (AB = D) los importes J–S van en US$ y W lleva el TC: Contasis los lee en la moneda del comprobante.
 """
 from __future__ import annotations
 
@@ -35,7 +36,9 @@ def fila_contasis(f: Fila, plan=None) -> list:
     p.cuenta = d.cuenta_gasto
     p.glosa = d.glosa
     p.av = pcge.av_por_cuenta(d.cuenta_gasto)
-    fila = fila_newcontasis(p, d.cuenta_pago, usd_en_soles=True, cuenta_percepcion='40113')
+    # Contasis lee J–S en la MONEDA del comprobante (AB): en dólares van en US$ y él convierte con el TC de W.
+    # (Prueba real del 12/11/2026: con J–S en soles y AB = D, registró US$ 3,377.38 por una factura de US$ 982.94.)
+    fila = fila_newcontasis(p, d.cuenta_pago, usd_en_soles=False, cuenta_percepcion='40113')
     fila[COL_AE] = d.condicion or fila[COL_AE]
     fila[COL_AF] = d.cuenta_gasto
     fila[COL_AS] = d.glosa[:60]
@@ -43,13 +46,14 @@ def fila_contasis(f: Fila, plan=None) -> list:
     if fila[COL_AK] == 3:                     # retención declarada en el XML: va por el reporte de ajustes
         for j in range(COL_AK, COL_AP + 1):
             fila[j] = ''
-    if es_de_excel(p.c):                      # vino del Excel: se exportan sus importes en soles, su TC y su US$ tal cual
+    if es_de_excel(p.c):                      # vino del Excel
         x = p.c.excel
-        for j, col in enumerate('JKLMNOPQRS', start=9):
-            fila[j] = round(float(x[col]), 2)
-        if p.c.moneda_codigo == 'USD':
+        if p.c.moneda_codigo == 'USD':        # importes en US$ (los del Excel venían en soles), su TC y su total en US$
             fila[22] = p.tc or x['tc']
             fila[28] = round(float(x['AC']), 2)
+        else:                                 # en soles: sus importes tal cual
+            for j, col in enumerate('JKLMNOPQRS', start=9):
+                fila[j] = round(float(x[col]), 2)
         if x.get('anio_dua'):
             fila[4] = x['anio_dua']
     return fila
