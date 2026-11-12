@@ -387,6 +387,7 @@ class Sesion:
         plan = m.plan
         # suma por proveedor y fecha de pago, para la regla de los S/ 700
         sumas: dict[tuple, float] = defaultdict(float)
+        hay_reporte = any(not cr.anulado for cr in m.retenciones)
         for f in self.filas.values():
             if f.d.estado == 'excluido':
                 continue
@@ -407,11 +408,18 @@ class Sesion:
             if not f.retencion_exclusion and supera and d.condicion == 'CON':
                 f.retencion_sugerida = True
             if d.estado == 'pendiente' and not d.retencion_manual:
-                d.retencion = f.retencion_sugerida
+                # Con el reporte de SUNAT (o los XML) de retenciones del mes cargado, manda el reporte: solo lleva retención
+                # lo que tiene comprobante (el cruce lo marca). Sin reporte, se propone por la regla de los S/ 700.
+                d.retencion = f.retencion_sugerida and not hay_reporte
                 d.retencion_monto = f.retencion_calculada if d.retencion else 0.0
             if f.retencion_sugerida and not d.retencion and not d.motivo_no_retencion:
-                rojo = True
-                f.avisos.append(f'Cumple las reglas de retención (S/ {f.retencion_calculada:,.2f}) pero no está marcada: márquela o indique el motivo.')
+                if hay_reporte:
+                    amarillo = True
+                    f.avisos.append(f'Por la regla de los S/ 700 tendría retención (S/ {f.retencion_calculada:,.2f}), pero no aparece en los '
+                                    'comprobantes de retención del mes: no se marca. Si sí se retuvo, márquela y ponga el comprobante.')
+                else:
+                    rojo = True
+                    f.avisos.append(f'Cumple las reglas de retención (S/ {f.retencion_calculada:,.2f}) pero no está marcada: márquela o indique el motivo.')
             if d.retencion:
                 if d.condicion == 'CRE' or d.cuenta_pago.startswith('4212'):
                     rojo = True

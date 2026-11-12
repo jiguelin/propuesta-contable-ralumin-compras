@@ -63,3 +63,24 @@ def test_cruce_con_las_compras_del_mes():
     assert s.retenciones_anuladas == ['E001-1060']
     assert {x[2] for x in s.retenciones_sin_factura} == {'E001-35', 'E001-44'}
     assert {x[1] for x in s.retenciones_cruzadas} == {'E001-185', 'E001-1117'}
+
+
+def test_con_reporte_manda_el_reporte_no_la_regla():
+    """Dos facturas del mismo proveedor el mismo día suman más de S/ 700: la regla sugiere retención,
+    pero si el reporte del mes no tiene comprobante para ellas, no se marcan (solo aviso amarillo)."""
+    from motor.retenciones import ComprobanteRetencion, ReferenciaRetencion
+    otro = ComprobanteRetencion('E001-1', '2026-07-31', '20999999909', 'OTRO SAC', 3.0, 3.0,
+                                [ReferenciaRetencion('01', 'F001-9', '2026-07-31', 100.0, 100.0, 3.0)])
+    xmls = [xml_factura(PROV_CAJA, 'FERRE SAC', 'F010-70', '2026-07-20', 400, items=[('BROCAS', 400)]),
+            xml_factura(PROV_CAJA, 'FERRE SAC', 'F010-71', '2026-07-20', 300, items=[('BROCAS', 300)])]
+    s = Sesion('2026-07')
+    s.agregar_xml([(f'x{k}.xml', x) for k, x in enumerate(xmls)])
+    s.procesar(maestros())                                                  # sin reporte: regla de los S/ 700
+    assert fila(s, 'F010-70').d.retencion
+    s2 = Sesion('2026-07')
+    s2.agregar_xml([(f'x{k}.xml', x) for k, x in enumerate(xmls)])
+    s2.procesar(maestros(retenciones=[otro]))                               # con reporte: manda el reporte
+    f = fila(s2, 'F010-70')
+    assert f.retencion_sugerida and not f.d.retencion and f.d.retencion_monto == 0
+    assert f.nivel != 'rojo' or not any('reglas de retención' in a for a in f.avisos)
+    assert any('no aparece en los comprobantes de retención' in a for a in f.avisos)
