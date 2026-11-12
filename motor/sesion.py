@@ -174,6 +174,8 @@ class Sesion:
         self.no_leidos: list[tuple[str, str]] = []      # (archivo, motivo)
         self.constancias_sin_factura: list = []
         self.retenciones_sin_factura: list = []
+        self.retenciones_cruzadas: list = []
+        self.retenciones_anuladas: list = []
         self.actualizado = ''
 
     # ------------------------------------------------------------------ carga
@@ -358,7 +360,11 @@ class Sesion:
             s, n = normalizar_serie_numero(f.c.serie_numero)
             indice[(f.c.ruc_emisor, s, n)] = f
         sin = []
+        self.retenciones_cruzadas = []           # (comprobante de retención, factura, monto) que hicieron match
+        self.retenciones_anuladas = [cr.serie_numero for cr in m.retenciones if cr.anulado]
         for cr in m.retenciones:
+            if cr.anulado:                       # un comprobante anulado/revertido no retuvo nada
+                continue
             for ref in cr.referencias:
                 s, n = normalizar_serie_numero(ref.serie_numero)
                 f = indice.get((cr.ruc_proveedor, s, n))
@@ -366,6 +372,7 @@ class Sesion:
                     sin.append((cr.serie_numero, cr.ruc_proveedor, ref.serie_numero, ref.retencion))
                     continue
                 d = f.d
+                self.retenciones_cruzadas.append((cr.serie_numero, f.c.serie_numero, round(ref.retencion, 2)))
                 if d.estado in ('exportado', 'contabilizado'):
                     continue
                 d.retencion, d.retencion_manual = True, True
@@ -408,20 +415,32 @@ class Sesion:
             if d.retencion:
                 if d.condicion == 'CRE' or d.cuenta_pago.startswith('4212'):
                     rojo = True
-                    f.avisos.append('Retención en una compra al crédito: se aplica al pagar (fuera de esta versión). Desmarque o cambie la cuenta de pago.')
+                    if d.retencion_serie and d.fecha_pago and d.fecha_pago == c.fecha_emision:
+                        f.avisos.append(f'El comprobante de retención {d.retencion_serie}-{d.retencion_numero} muestra que se pagó el mismo día de la '
+                                        'emisión: parece contado. Cambie Cond a CON y la cuenta de pago a la 104; si de verdad es crédito, '
+                                        'desmarque la retención (va en el asiento de pago).')
+                    else:
+                        f.avisos.append('Retención en una compra al crédito: se aplica al pagar (fuera de esta versión). Desmarque o cambie la cuenta de pago.')
                 if f.retencion_exclusion:
                     amarillo = True
                     f.avisos.append(f'Retención marcada, pero la regla la excluye: {f.retencion_exclusion}.')
                 if d.retencion_serie and abs(d.retencion_monto - f.retencion_calculada) > 0.011:
-                    rojo = True
-                    f.avisos.append(f'El comprobante de retención dice S/ {d.retencion_monto:,.2f} y el 3 % calculado es S/ {f.retencion_calculada:,.2f}.')
+                    # en dólares la retención se calcula con el TC del día de PAGO, no con el de la emisión:
+                    # una diferencia pequeña es normal y manda el comprobante.
+                    tolerancia = max(0.02, f.retencion_calculada * 0.05) if c.moneda_codigo == 'USD' else 0.011
+                    if abs(d.retencion_monto - f.retencion_calculada) > tolerancia:
+                        rojo = True
+                        f.avisos.append(f'El comprobante de retención dice S/ {d.retencion_monto:,.2f} y el 3 % calculado es S/ {f.retencion_calculada:,.2f}.')
+                    else:
+                        f.avisos.append(f'Retención S/ {d.retencion_monto:,.2f} según el comprobante {d.retencion_serie}-{d.retencion_numero} '
+                                        f'(el 3 % al TC de la emisión daría S/ {f.retencion_calculada:,.2f}: se usa el comprobante).')
                 if not d.retencion_serie:
                     amarillo = True
                     f.avisos.append('Retención sin comprobante de retención (serie-número): cárguelo o digítelo.')
-                if f.retencion_sugerida and not m.padron:
+                if f.retencion_sugerida and not m.padron and not d.retencion_serie:   # con comprobante, la retención ya se hizo
                     amarillo = True
                     f.avisos.append('Verificar padrón: sin padrones SUNAT no se puede descartar buen contribuyente o agente.')
-                if c.moneda_codigo == 'USD':
+                if c.moneda_codigo == 'USD' and not d.retencion_serie:               # con comprobante, manda su importe en soles
                     amarillo = True
                     f.avisos.append('Retención en dólares: se calcula en soles al TC de la fecha de pago; revisar.')
             # ---- comisión ----

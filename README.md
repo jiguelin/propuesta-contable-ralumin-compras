@@ -23,7 +23,7 @@ Basado en el motor de [Propuesta Contable de Compras](https://github.com/jigueli
    **PDF de tipo de cambio SUNAT** del mes. Si alguien creó o cambió cuentas, subir también el **plan de cuentas**;
    si hay proveedores nuevos, las **entidades**. Opcional: padrones SUNAT (buenos contribuyentes, agentes de retención y de percepción).
 2. **1 · Cargar:** subir los XML del mes (sueltos o ZIP; se puede en varias tandas) **o el Excel de comprobantes**, o los dos.
-   Opcional: los XML de los comprobantes de retención que emite Ralumin y las constancias de detracción.
+   Opcional: los comprobantes de retención que emite Ralumin (XML/ZIP **o el Excel de SUNAT**, ver abajo) y las constancias de detracción.
 3. **2 · Propuesta:** elegir un grupo o **buscar** (RUC, proveedor, serie-número, importe, ítem). Corregir en la tabla
    la cuenta de gasto, la cuenta de pago, la retención o la **comisión bancaria**. Seleccionar y **Crear bloque**.
 4. **3 · Bloques:** descargar el Excel del bloque, importarlo en Contasis y confirmar: con el botón o subiendo el Diario
@@ -48,6 +48,21 @@ con las cuentas vacías. Reglas de lectura:
 
 Comprobantes de **meses anteriores** que no están en el Diario quedan pendientes con aviso (se registran en el mes de trabajo);
 los de meses posteriores se excluyen.
+
+## Retenciones sin XML: el Excel de SUNAT
+
+Si no se tiene el XML de los comprobantes de retención, se sube el Excel **"Consulta de Comprobantes Emitidos/Recibidos"**
+de SUNAT (`.xls` o `.xlsx`) en **1 · Cargar → Comprobantes de retención**. El app lee cada comprobante (N°, fecha, proveedor,
+importe retenido, estado) y sus facturas, y las cruza con las compras cargadas del mes por **RUC del proveedor + serie-número**
+(sin importar los ceros a la izquierda):
+
+- Si hay match, la compra queda con la retención marcada, el **importe del comprobante**, su serie-número y la fecha de pago
+  (= fecha del comprobante de retención).
+- En dólares manda el importe en soles del comprobante (SUNAT usa el TC del día de pago): una diferencia pequeña con el 3 %
+  al TC de la emisión no es error.
+- Si la compra está al crédito pero el comprobante muestra que se pagó el mismo día, el app avisa que parece contado.
+- Las facturas de meses anteriores (pagos de deudas ya registradas) se listan aparte: su retención va en el asiento de pago.
+- Los comprobantes anulados o revertidos no se aplican. Subir el mismo Excel dos veces no duplica nada.
 
 ## Reglas de Ralumin (en `ralumin/config.py`)
 
@@ -88,7 +103,7 @@ ANTHROPIC_API_KEY = "sk-ant-..."    # opcional: IA solo en casos dudosos
 ```bash
 pip install -r requirements.txt
 streamlit run app.py
-python -m pytest -q          # 19 pruebas con datos ficticios
+python -m pytest -q          # 22 pruebas con datos ficticios
 ```
 
 ## Estructura

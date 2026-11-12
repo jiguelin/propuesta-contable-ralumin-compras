@@ -357,14 +357,23 @@ with tab_carga:
                 'comprobantes en dólares. Cuando subas el PDF, se usará el de SUNAT.')
     col1, col2 = st.columns(2)
     with col1:
-        cre = st.file_uploader('Comprobantes de retención emitidos por Ralumin (XML o ZIP)', type=['xml', 'zip'], accept_multiple_files=True, key='up_cre')
+        cre = st.file_uploader('Comprobantes de retención emitidos por Ralumin (XML, ZIP o el Excel de SUNAT .xls/.xlsx)',
+                               type=['xml', 'zip', 'xls', 'xlsx'], accept_multiple_files=True, key='up_cre')
+        st.caption('Sin XML: subir el Excel "Consulta de Comprobantes Emitidos" de retenciones. Se cruza por RUC del proveedor + serie-número '
+                   'de la factura con las compras cargadas del mes.')
         if cre and st.button('Guardar comprobantes de retención'):
             prev = ALM.leer(f'retenciones:{periodo}', defecto=[])
             nuevos = [(u.name, base64.b64encode(u.getvalue()).decode()) for u in cre]
             ok, malos = leer_retenciones([(u.name, u.getvalue()) for u in cre])
             ALM.guardar(f'retenciones:{periodo}', prev + nuevos)
-            st.success(f'{len(ok)} comprobante(s) de retención leídos.' + (f' No se pudieron leer: {", ".join(malos)}' if malos else ''))
             reprocesar()
+            n_refs = sum(len(c.referencias) for c in ok if not c.anulado)
+            msgs = [f'{len(ok)} comprobante(s) de retención leídos ({n_refs} facturas). '
+                    f'{len({a for a, _, _ in S.retenciones_cruzadas})} cruzaron con compras del mes ({len(S.retenciones_cruzadas)} facturas).']
+            if malos:
+                msgs.append(f'No se pudieron leer: {", ".join(malos)}')
+            st.session_state['msg_carga'] = msgs
+            st.rerun()
     with col2:
         cons = st.file_uploader('Constancias de detracción (TXT/CSV/Excel de SUNAT, PDF o ZIP)', type=['txt', 'csv', 'xlsx', 'pdf', 'zip'],
                                 accept_multiple_files=True, key='up_cons')
@@ -376,9 +385,18 @@ with tab_carga:
     if S.no_leidos:
         with st.expander(f'{len(S.no_leidos)} archivo(s) que no son comprobantes de compra'):
             st.dataframe(pd.DataFrame(S.no_leidos, columns=['Archivo', 'Motivo']), hide_index=True, width='stretch')
+    if S.retenciones_cruzadas:
+        with st.expander(f'🔗 {len(S.retenciones_cruzadas)} factura(s) con retención cruzada con las compras del mes'):
+            st.dataframe(pd.DataFrame(S.retenciones_cruzadas, columns=['Comprobante de retención', 'Factura de compra', 'Retención S/']),
+                         hide_index=True, width='stretch')
+    if S.retenciones_anuladas:
+        st.info('Comprobantes de retención anulados o revertidos (no se aplican): ' + ', '.join(S.retenciones_anuladas))
     if S.retenciones_sin_factura:
-        st.warning(f'{len(S.retenciones_sin_factura)} referencia(s) de comprobantes de retención sin factura en el lote: '
-                   + ', '.join(f'{a} → {c}' for a, _, c, _ in S.retenciones_sin_factura[:8]))
+        with st.expander(f'{len(S.retenciones_sin_factura)} factura(s) de los comprobantes de retención que no están entre las compras cargadas'):
+            st.caption('Normal si la factura es de un mes anterior (ya está en el Diario) o si aún no subes todas las compras del mes.')
+            st.dataframe(pd.DataFrame([(a, b, c, d) for a, b, c, d in S.retenciones_sin_factura],
+                                      columns=['Comprobante de retención', 'RUC proveedor', 'Factura', 'Retención S/']),
+                         hide_index=True, width='stretch')
     if (S.xml or S.excel) and st.button('Volver a procesar todo'):
         reprocesar()
         st.rerun()
