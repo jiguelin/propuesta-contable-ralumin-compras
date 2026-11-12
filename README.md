@@ -37,7 +37,9 @@ Cuando no se pueden descargar los XML, se sube un Excel con el **mismo orden de 
 con las cuentas vacías. Reglas de lectura:
 
 - Importes J–S **en soles**. Si la columna **AC** tiene un monto, el comprobante es **en dólares** y **W** trae su tipo de cambio
-  (en soles AC viene vacío y W = 1). El Excel del bloque devuelve esos importes, ese TC y ese US$ tal cual.
+  (en soles AC viene vacío y W = 1).
+- **El Excel del bloque lleva los importes en la moneda del comprobante:** en dólares (AB = D), J–S van **en US$** y W el TC;
+  Contasis convierte a soles. (Con J–S en soles registraba, por ejemplo, US$ 3,377.38 por una factura de US$ 982.94.)
 - No trae ítems, glosa ni forma de pago: la cuenta de gasto sale del **historial del proveedor** (Diario) y, si no tiene,
   de su nombre (queda para revisar); el crédito, del vencimiento (AD posterior a la emisión) o de que al proveedor se le
   registraba con 4212. La glosa sale del concepto de la cuenta o de la que tuvo el proveedor en el Diario.
@@ -132,4 +134,4 @@ tests/                 ← pruebas con XML y Diarios ficticios
 | T1 | Factura con AK–AP de retención y AH = 104103 | Si la retención puede ir por plantilla |
 | T3 | Un comprobante en dos filas (60 % / 40 %) | Si el reparto 60/40 puede ir por plantilla |
 | T4 | Tres facturas en un orden conocido | Si Contasis numera los asientos en el orden de las filas |
-| T5 | Factura en dólares al crédito | Confirma importes en soles + TC + equivalente en US$ |
+| T5 | Factura en dólares | ✔ Hecha el 12/11/2026: J–S deben ir en US$ (en soles Contasis los toma como dólares) |

@@ -90,7 +90,7 @@ def test_sesion_con_excel():
     assert usd.nivel != 'rojo', usd.avisos
     b = s.crear_bloque([usd.id], 'USD', m)
     r = list(openpyxl.load_workbook(io.BytesIO(excel_bloque(s, b))).active.iter_rows(values_only=True))[0]
-    assert (r[9], r[10], r[18], r[22], r[27], r[28]) == (859.41, 154.69, 1014.1, 3.439, 'D', 294.88)
+    assert (r[9], r[10], r[18], r[22], r[27], r[28]) == (249.9, 44.98, 294.88, 3.439, 'D', 294.88)
 
 
 def test_credito_por_historial():
